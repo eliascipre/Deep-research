@@ -41,6 +41,8 @@ from open_deep_research.state import (
 )
 from open_deep_research.utils import (
     anthropic_websearch_called,
+    build_model_config,
+    create_local_model,
     get_all_tools,
     get_api_key_for_model,
     get_model_token_limit,
@@ -78,19 +80,14 @@ async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Comman
     
     # Step 2: Prepare the model for structured clarification analysis
     messages = state["messages"]
-    model_config = {
-        "model": configurable.research_model,
-        "max_tokens": configurable.research_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.research_model, config),
-        "tags": ["langsmith:nostream"]
-    }
     
     # Configure model with structured output and retry logic
-    clarification_model = (
-        configurable_model
-        .with_structured_output(ClarifyWithUser)
-        .with_retry(stop_after_attempt=configurable.max_structured_output_retries)
-        .with_config(model_config)
+    clarification_model = create_local_model(
+        configurable.research_model, 
+        configurable.research_model_max_tokens, 
+        config
+    ).with_structured_output(ClarifyWithUser).with_retry(
+        stop_after_attempt=configurable.max_structured_output_retries
     )
     
     # Step 3: Analyze whether clarification is needed
@@ -131,19 +128,14 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
     """
     # Step 1: Set up the research model for structured output
     configurable = Configuration.from_runnable_config(config)
-    research_model_config = {
-        "model": configurable.research_model,
-        "max_tokens": configurable.research_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.research_model, config),
-        "tags": ["langsmith:nostream"]
-    }
     
     # Configure model for structured research question generation
-    research_model = (
-        configurable_model
-        .with_structured_output(ResearchQuestion)
-        .with_retry(stop_after_attempt=configurable.max_structured_output_retries)
-        .with_config(research_model_config)
+    research_model = create_local_model(
+        configurable.research_model, 
+        configurable.research_model_max_tokens, 
+        config
+    ).with_structured_output(ResearchQuestion).with_retry(
+        stop_after_attempt=configurable.max_structured_output_retries
     )
     
     # Step 2: Generate structured research brief from user messages
@@ -191,22 +183,17 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
     """
     # Step 1: Configure the supervisor model with available tools
     configurable = Configuration.from_runnable_config(config)
-    research_model_config = {
-        "model": configurable.research_model,
-        "max_tokens": configurable.research_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.research_model, config),
-        "tags": ["langsmith:nostream"]
-    }
     
     # Available tools: research delegation, completion signaling, and strategic thinking
     lead_researcher_tools = [ConductResearch, ResearchComplete, think_tool]
     
     # Configure model with tools, retry logic, and model settings
-    research_model = (
-        configurable_model
-        .bind_tools(lead_researcher_tools)
-        .with_retry(stop_after_attempt=configurable.max_structured_output_retries)
-        .with_config(research_model_config)
+    research_model = create_local_model(
+        configurable.research_model, 
+        configurable.research_model_max_tokens, 
+        config
+    ).bind_tools(lead_researcher_tools).with_retry(
+        stop_after_attempt=configurable.max_structured_output_retries
     )
     
     # Step 2: Generate supervisor response based on current context
@@ -389,12 +376,11 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
         )
     
     # Step 2: Configure the researcher model with tools
-    research_model_config = {
-        "model": configurable.research_model,
-        "max_tokens": configurable.research_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.research_model, config),
-        "tags": ["langsmith:nostream"]
-    }
+    research_model = create_local_model(
+        configurable.research_model, 
+        configurable.research_model_max_tokens, 
+        config
+    )
     
     # Prepare system prompt with MCP context if available
     researcher_prompt = research_system_prompt.format(
@@ -524,12 +510,11 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     """
     # Step 1: Configure the compression model
     configurable = Configuration.from_runnable_config(config)
-    synthesizer_model = configurable_model.with_config({
-        "model": configurable.compression_model,
-        "max_tokens": configurable.compression_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.compression_model, config),
-        "tags": ["langsmith:nostream"]
-    })
+    synthesizer_model = create_local_model(
+        configurable.compression_model, 
+        configurable.compression_model_max_tokens, 
+        config
+    )
     
     # Step 2: Prepare messages for compression
     researcher_messages = state.get("researcher_messages", [])
@@ -624,12 +609,11 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
     
     # Step 2: Configure the final report generation model
     configurable = Configuration.from_runnable_config(config)
-    writer_model_config = {
-        "model": configurable.final_report_model,
-        "max_tokens": configurable.final_report_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.final_report_model, config),
-        "tags": ["langsmith:nostream"]
-    }
+    writer_model = create_local_model(
+        configurable.final_report_model, 
+        configurable.final_report_model_max_tokens, 
+        config
+    )
     
     # Step 3: Attempt report generation with token limit retry logic
     max_retries = 3
@@ -647,7 +631,7 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
             )
             
             # Generate the final report
-            final_report = await configurable_model.with_config(writer_model_config).ainvoke([
+            final_report = await writer_model.ainvoke([
                 HumanMessage(content=final_report_prompt)
             ])
             

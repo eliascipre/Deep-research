@@ -9,6 +9,7 @@ from typing import Annotated, Any, Dict, List, Literal, Optional
 
 import aiohttp
 from langchain.chat_models import init_chat_model
+from langchain_openai import ChatOpenAI
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -28,6 +29,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.config import get_store
 from mcp import McpError
 from tavily import AsyncTavilyClient
+from duckduckgo_search import DDGS
 
 from open_deep_research.configuration import Configuration, SearchAPI
 from open_deep_research.prompts import summarize_webpage_prompt
@@ -82,12 +84,10 @@ async def tavily_search(
     max_char_to_include = configurable.max_content_length
     
     # Initialize summarization model with retry logic
-    model_api_key = get_api_key_for_model(configurable.summarization_model, config)
-    summarization_model = init_chat_model(
-        model=configurable.summarization_model,
-        max_tokens=configurable.summarization_model_max_tokens,
-        api_key=model_api_key,
-        tags=["langsmith:nostream"]
+    summarization_model = create_local_model(
+        configurable.summarization_model, 
+        configurable.summarization_model_max_tokens, 
+        config
     ).with_structured_output(Summary).with_retry(
         stop_after_attempt=configurable.max_structured_output_retries
     )
@@ -134,6 +134,147 @@ async def tavily_search(
         formatted_output += "\n\n" + "-" * 80 + "\n"
     
     return formatted_output
+
+##########################
+# DuckDuckGo Search Tool Utils
+##########################
+DUCKDUCKGO_SEARCH_DESCRIPTION = (
+    "A free search engine that provides comprehensive web search results. "
+    "Useful for finding current information and avoiding API costs."
+)
+
+@tool(description=DUCKDUCKGO_SEARCH_DESCRIPTION)
+async def duckduckgo_search(
+    queries: List[str],
+    max_results: Annotated[int, InjectedToolArg] = 5,
+    config: RunnableConfig = None
+) -> str:
+    """Fetch and summarize search results from DuckDuckGo search.
+
+    Args:
+        queries: List of search queries to execute
+        max_results: Maximum number of results to return per query
+        config: Runtime configuration for model settings
+
+    Returns:
+        Formatted string containing summarized search results
+    """
+    # Step 1: Execute search queries
+    search_results = await duckduckgo_search_async(
+        queries,
+        max_results=max_results
+    )
+    
+    # Step 2: Deduplicate results by URL
+    unique_results = {}
+    for response in search_results:
+        for result in response['results']:
+            url = result['url']
+            if url not in unique_results:
+                unique_results[url] = {**result, "query": response['query']}
+    
+    # Step 3: Set up the summarization model with configuration
+    configurable = Configuration.from_runnable_config(config)
+    
+    # Character limit to stay within model token limits
+    max_char_to_include = configurable.max_content_length
+    
+    # Initialize summarization model with retry logic
+    summarization_model = create_local_model(
+        configurable.summarization_model, 
+        configurable.summarization_model_max_tokens, 
+        config
+    ).with_structured_output(Summary).with_retry(
+        stop_after_attempt=configurable.max_structured_output_retries
+    )
+    
+    # Step 4: Create summarization tasks for results with content
+    async def noop():
+        """No-op function for results without content."""
+        return None
+    
+    summarization_tasks = [
+        noop() if not result.get("body") 
+        else summarize_webpage(
+            summarization_model, 
+            result['body'][:max_char_to_include]
+        )
+        for result in unique_results.values()
+    ]
+    
+    # Step 5: Execute all summarization tasks in parallel
+    summaries = await asyncio.gather(*summarization_tasks)
+    
+    # Step 6: Combine results with their summaries
+    summarized_results = {
+        url: {
+            'title': result['title'], 
+            'content': result['body'] if summary is None else summary
+        }
+        for url, result, summary in zip(
+            unique_results.keys(), 
+            unique_results.values(), 
+            summaries
+        )
+    }
+    
+    # Step 7: Format the final output
+    if not summarized_results:
+        return "No valid search results found. Please try different search queries."
+    
+    formatted_output = "Search results: \n\n"
+    for i, (url, result) in enumerate(summarized_results.items()):
+        formatted_output += f"\n\n--- SOURCE {i+1}: {result['title']} ---\n"
+        formatted_output += f"URL: {url}\n\n"
+        formatted_output += f"SUMMARY:\n{result['content']}\n\n"
+        formatted_output += "\n\n" + "-" * 80 + "\n"
+    
+    return formatted_output
+
+async def duckduckgo_search_async(
+    search_queries, 
+    max_results: int = 5
+):
+    """Execute multiple DuckDuckGo search queries asynchronously.
+    
+    Args:
+        search_queries: List of search query strings to execute
+        max_results: Maximum number of results per query
+        
+    Returns:
+        List of search result dictionaries from DuckDuckGo
+    """
+    search_results = []
+    
+    for query in search_queries:
+        try:
+            # Use DuckDuckGo search
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+                
+                # Format results to match expected structure
+                formatted_results = []
+                for result in results:
+                    formatted_results.append({
+                        'title': result.get('title', ''),
+                        'body': result.get('body', ''),
+                        'url': result.get('href', ''),
+                        'query': query
+                    })
+                
+                search_results.append({
+                    'query': query,
+                    'results': formatted_results
+                })
+        except Exception as e:
+            # Handle search errors gracefully
+            search_results.append({
+                'query': query,
+                'results': [],
+                'error': str(e)
+            })
+    
+    return search_results
 
 async def tavily_search_async(
     search_queries, 
@@ -532,7 +673,7 @@ async def get_search_tool(search_api: SearchAPI):
     """Configure and return search tools based on the specified API provider.
     
     Args:
-        search_api: The search API provider to use (Anthropic, OpenAI, Tavily, or None)
+        search_api: The search API provider to use (Anthropic, OpenAI, Tavily, DuckDuckGo, or None)
         
     Returns:
         List of configured search tool objects for the specified provider
@@ -552,6 +693,16 @@ async def get_search_tool(search_api: SearchAPI):
     elif search_api == SearchAPI.TAVILY:
         # Configure Tavily search tool with metadata
         search_tool = tavily_search
+        search_tool.metadata = {
+            **(search_tool.metadata or {}), 
+            "type": "search", 
+            "name": "web_search"
+        }
+        return [search_tool]
+        
+    elif search_api == SearchAPI.DUCKDUCKGO:
+        # Configure DuckDuckGo search tool with metadata
+        search_tool = duckduckgo_search
         search_tool.metadata = {
             **(search_tool.metadata or {}), 
             "type": "search", 
@@ -906,6 +1057,11 @@ def get_api_key_for_model(model_name: str, config: RunnableConfig):
         return None
     else:
         if model_name.startswith("openai:"): 
+            # Check if it's a local URL (localhost or 127.0.0.1)
+            if "localhost" in model_name or "127.0.0.1" in model_name:
+                # Para APIs locales, no enviar clave API si no está configurada
+                api_key = os.getenv("OPENAI_API_KEY")
+                return api_key if api_key else None
             return os.getenv("OPENAI_API_KEY")
         elif model_name.startswith("anthropic:"):
             return os.getenv("ANTHROPIC_API_KEY")
@@ -923,3 +1079,44 @@ def get_tavily_api_key(config: RunnableConfig):
         return api_keys.get("TAVILY_API_KEY")
     else:
         return os.getenv("TAVILY_API_KEY")
+
+def build_model_config(model_name: str, max_tokens: int, config: RunnableConfig) -> dict:
+    """Build model configuration dictionary, handling local APIs without authentication."""
+    model_config = {
+        "model": model_name,
+        "max_tokens": max_tokens,
+        "tags": ["langsmith:nostream"]
+    }
+    
+    # Get API key for the model
+    api_key = get_api_key_for_model(model_name, config)
+    
+    # For local APIs, extract the base URL and use a dummy API key that won't be sent
+    if "localhost" in model_name or "127.0.0.1" in model_name:
+        if model_name.startswith("openai:"):
+            base_url = model_name.replace("openai:", "")
+            model_config["base_url"] = base_url
+            # Use a dummy API key that satisfies the client but won't be sent
+            model_config["api_key"] = "sk-dummy-key-for-local-api"
+    elif api_key is not None:
+        model_config["api_key"] = api_key
+    
+    return model_config
+
+def create_local_model(model_name: str, max_tokens: int, config: RunnableConfig) -> BaseChatModel:
+    """Create a model instance for local APIs without authentication."""
+    if "localhost" in model_name or "127.0.0.1" in model_name:
+        if model_name.startswith("openai:"):
+            base_url = model_name.replace("openai:", "")
+            # Create a ChatOpenAI instance with local configuration
+            return ChatOpenAI(
+                model="openai/gpt-oss-20b",  # Use the actual model name
+                base_url=base_url,
+                api_key="dummy-key",  # Dummy key that won't be validated
+                max_tokens=max_tokens,
+                temperature=0.7
+            )
+    
+    # Fallback to regular init_chat_model for non-local APIs
+    model_config = build_model_config(model_name, max_tokens, config)
+    return init_chat_model(**model_config)
