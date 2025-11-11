@@ -5,7 +5,13 @@ import uuid
 import pytest
 import asyncio
 from pydantic import BaseModel, Field
-from langchain.chat_models import init_chat_model
+try:
+    from langchain.chat_models import init_chat_model
+except ImportError:
+    try:
+        from langchain_core.chat_models import init_chat_model
+    except ImportError:
+        from langchain import init_chat_model
 from langsmith import testing as t
 from rich.console import Console
 from rich.panel import Panel

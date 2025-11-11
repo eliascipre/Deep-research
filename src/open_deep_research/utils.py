@@ -8,7 +8,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
 import aiohttp
-from langchain.chat_models import init_chat_model
+try:
+    from langchain.chat_models import init_chat_model
+except ImportError:
+    try:
+        from langchain_core.chat_models import init_chat_model
+    except ImportError:
+        from langchain import init_chat_model
 from langchain_openai import ChatOpenAI
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (

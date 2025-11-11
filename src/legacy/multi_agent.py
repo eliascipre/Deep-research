@@ -3,7 +3,13 @@ from pydantic import BaseModel, Field
 import operator
 import warnings
 
-from langchain.chat_models import init_chat_model
+try:
+    from langchain.chat_models import init_chat_model
+except ImportError:
+    try:
+        from langchain_core.chat_models import init_chat_model
+    except ImportError:
+        from langchain import init_chat_model
 from langchain_core.tools import tool, BaseTool
 from langchain_core.runnables import RunnableConfig
 from langchain_mcp_adapters.client import MultiServerMCPClient

@@ -1,6 +1,12 @@
 from typing import Literal
 
-from langchain.chat_models import init_chat_model
+try:
+    from langchain.chat_models import init_chat_model
+except ImportError:
+    try:
+        from langchain_core.chat_models import init_chat_model
+    except ImportError:
+        from langchain import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 

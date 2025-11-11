@@ -23,8 +23,23 @@ from duckduckgo_search import DDGS
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 from pydantic import BaseModel
-from langchain.chat_models import init_chat_model
-from langchain.embeddings import init_embeddings
+try:
+    from langchain.chat_models import init_chat_model
+except ImportError:
+    try:
+        from langchain_core.chat_models import init_chat_model
+    except ImportError:
+        from langchain import init_chat_model
+try:
+    from langchain.embeddings import init_embeddings
+except ImportError:
+    try:
+        from langchain_core.embeddings import init_embeddings
+    except ImportError:
+        # Fallback: usar HuggingFaceEmbeddings directamente
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+        def init_embeddings(model_name):
+            return HuggingFaceEmbeddings(model_name=model_name)
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_anthropic import ChatAnthropic
